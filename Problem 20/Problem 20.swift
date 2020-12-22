@@ -1,10 +1,32 @@
 import Foundation
 
-enum Direction {
-	case North
-	case South
-	case West
-	case East
+extension StringProtocol {
+	var nsrange: NSRange {
+		return NSRange(location: 0, length: self.utf16.count)
+	}
+}
+
+class Coordinate: Equatable, Hashable, CustomStringConvertible {
+	static func == (lhs: Coordinate, rhs: Coordinate) -> Bool {
+		return lhs.east == rhs.east && lhs.south == rhs.south
+	}
+	
+	func hash(into hasher: inout Hasher) {
+		hasher.combine(east)
+		hasher.combine(south)
+	}
+	
+	public var description: String {
+		return "(\(east), \(south))"
+	}
+	
+	var east: Int
+	var south: Int
+	
+	init(_ east: Int, _ south: Int) {
+		self.east = east
+		self.south = south
+	}
 }
 
 class Tile: CustomStringConvertible, Equatable, Hashable {
@@ -20,6 +42,7 @@ class Tile: CustomStringConvertible, Equatable, Hashable {
 	var data: [[String]]
 	var id: Int
 	var size: Int
+	private var hasBeenShrunk = false
 	
 	// Map references
 	var northTile: Tile?
@@ -105,6 +128,88 @@ class Tile: CustomStringConvertible, Equatable, Hashable {
 		return matchedEdges.filter { $0 }.count
 	}
 	
+	func findSeaMonster() -> Int {
+		var monsterCount = 0
+		let line1Regex = try! NSRegularExpression(pattern: #"..................#."#, options: [])
+		let line2Regex = try! NSRegularExpression(pattern: #"#....##....##....###"#, options: [])
+		let line3Regex = try! NSRegularExpression(pattern: #".#..#..#..#..#..#..."#, options: [])
+		outerLoop: for tile in self.permutations() {
+			var count = 0
+			for i in 0..<tile.size - 2 {
+				// Go through each line and see if the line matches the first regex
+				let line = tile.data[i].joined(separator: "")
+				let line2 = tile.data[i + 1].joined(separator: "")
+				let line3 = tile.data[i + 2].joined(separator: "")
+				let matches1 = line1Regex.matches(in: line, options: [], range: line.nsrange)
+				if matches1.count > 0 {
+					// We have a match on line 1, go to the next line
+					let matches2 = line2Regex.matches(in: line2, options: [], range: line2.nsrange)
+					if matches2.count > 0 {
+						// We have a match on line2, let's check line 3
+						let matches3 = line3Regex.matches(in: line3, options: [], range: line3.nsrange)
+						if matches3.count > 0 {
+							// We have some seamonsters!
+							count += min(min(matches1.count, matches2.count), matches3.count)
+						}
+					}
+				}
+			}
+			monsterCount = max(monsterCount, count)
+		}
+		return monsterCount
+	}
+	
+	func findHardness() -> Int {
+		let monsterCount = self.findSeaMonster()
+		let allHardSquares = self.data.map { $0.filter { $0 == "#" }.count }.reduce(0, +)
+		// Each sea monster has 15 #'s in it
+		return allHardSquares - monsterCount * 15
+	}
+	
+	func shrink() {
+		if !hasBeenShrunk {
+			self.data = Array(self.data.map({ Array($0[1...$0.count - 2]) })[1...self.data.count - 2])
+			self.size = self.data[0].count
+			self.hasBeenShrunk = true
+		}
+	}
+	
+	func placeTile(_ other: Tile) -> Bool {
+		if self.eastTile != nil && self.eastTile!.placeTile(other) {
+			return true
+		}
+		else if self.westTile != nil && self.westTile!.placeTile(other) {
+			return true
+		}
+		else if self.southTile != nil && self.southTile!.placeTile(other) {
+			return true
+		}
+		else if self.northTile != nil && self.northTile!.placeTile(other) {
+			return true
+		}
+		// no other tiles - see if we can place it here
+		for tile in other.permutations() {
+			if self.northTile == nil && self.matchesNorth(tile) {
+				self.northTile = tile
+				return true
+			}
+			if self.eastTile == nil && self.matchesEast(tile) {
+				self.eastTile = tile
+				return true
+			}
+			if self.southTile == nil && self.matchesSouth(tile) {
+				self.southTile = tile
+				return true
+			}
+			if self.westTile == nil && self.matchesWest(tile) {
+				self.westTile = tile
+				return true
+			}
+		}
+		// Didn't match, return false
+		return false
+	}
+	
 	func matchesNorth(_ other: Tile) -> Bool {
 		if other == self {
 			return false
@@ -154,22 +259,131 @@ class Tile: CustomStringConvertible, Equatable, Hashable {
 	}
 	
 	public var description: String {
-		var desc = "Tile ID \(id):\n"
+		var desc = "Tile ID \(id) (size \(size)):\n"
 		desc += data.map { "\($0.joined(separator: ""))\n" }.joined()
 		return desc
 	}
 }
 
+func buildMap(_ corners: [Tile], _ edges: [Tile], _ allTiles: [Tile]) -> Tile {
+	var availableTiles = Set(allTiles).subtracting(corners).subtracting(edges)
+	let startingCorner = corners[0]
+	var borderTilesList = corners
+	borderTilesList.append(contentsOf: edges)
+	var borderTiles = Set(borderTilesList)
+	borderTiles.remove(startingCorner)
+	let mapSize = Int(sqrt(Double(allTiles.count)))
+	
+	// Start at one corner and place all the edge tiles
+	while borderTiles.count > 0 {
+		for tile in borderTiles {
+			if startingCorner.placeTile(tile) {
+				borderTiles.remove(tile)
+			}
+		}
+	}
+	// Now fill in the rest of the tiles
+	while availableTiles.count > 0 {
+		for tile in availableTiles {
+			if startingCorner.placeTile(tile) {
+				availableTiles.remove(tile)
+			}
+		}
+	}
+	
+	var map = [Coordinate: Tile]()
+	
+	// Now build the map from the linked list
+	map[Coordinate(0, 0)] = startingCorner
+	var currentTile: Tile? = nil
+	if startingCorner.eastTile != nil {
+		currentTile = startingCorner.eastTile
+		for i in 1..<mapSize {
+			map[Coordinate(i, 0)] = currentTile!
+			currentTile = currentTile!.eastTile
+		}
+	} else if startingCorner.westTile != nil {
+		currentTile = startingCorner.westTile
+		for i in 1..<mapSize {
+			map[Coordinate(-i, 0)] = currentTile!
+			currentTile = currentTile!.westTile
+		}
+	}
+	if startingCorner.southTile != nil {
+		currentTile = startingCorner.southTile
+		for i in 1..<mapSize {
+			map[Coordinate(0, i)] = currentTile!
+			currentTile = currentTile!.southTile
+		}
+	} else if startingCorner.northTile != nil {
+		currentTile = startingCorner.northTile
+		for i in 1..<mapSize {
+			map[Coordinate(0, -i)] = currentTile!
+			currentTile = currentTile!.northTile
+		}
+	}
+	while map.count != allTiles.count {
+		for t in map {
+			let coord = t.key
+			let tile = t.value
+			if tile.northTile != nil {
+				map[Coordinate(coord.east, coord.south - 1)] = tile.northTile!
+			}
+			if tile.southTile != nil {
+				map[Coordinate(coord.east, coord.south + 1)] = tile.southTile!
+			}
+			if tile.eastTile != nil {
+				map[Coordinate(coord.east + 1, coord.south)] = tile.eastTile!
+			}
+			if tile.westTile != nil {
+				map[Coordinate(coord.east - 1, coord.south)] = tile.westTile!
+			}
+		}
+	}
+	// Now build the tile
+	var tileData = "Tile 0:\n"
+	startingCorner.shrink()
+	for south in -mapSize...mapSize {
+		var line: [String] = Array(repeating: "", count: startingCorner.size)
+		for east in -mapSize...mapSize {
+			let tile = map[Coordinate(east, south)]
+			if tile != nil {
+				tile!.shrink()
+				for i in 0..<tile!.data[0].count {
+					line[i] += tile!.data[i].joined(separator: "")
+				}
+			}
+		}
+		if line.filter({ $0.count > 0 }).count > 0 {
+			tileData += line.joined(separator: "\n")
+			tileData += "\n"
+		}
+	}
+	return Tile(tileData)
+}
+
 
 let problemFile = String(try NSString(contentsOfFile: "./input.txt", encoding: String.Encoding.ascii.rawValue))
 let tiles = problemFile.components(separatedBy: "\n\n").map { Tile($0) }
-let corners = tiles.filter { $0.isCorner(tiles) }.map { $0.id }
+let corners = tiles.filter { $0.isCorner(tiles) }
 let edges = tiles.filter { $0.isEdge(tiles) }
 
 let testFile = String(try NSString(contentsOfFile: "./testfile.txt", encoding: String.Encoding.ascii.rawValue))
 let testTiles = testFile.components(separatedBy: "\n\n").map { Tile($0) }
-let testCorners = testTiles.filter { $0.isCorner(testTiles) }.map { $0.id }
+let testCorners = testTiles.filter { $0.isCorner(testTiles) }
 let testEdges = testTiles.filter { $0.isEdge(testTiles) }
 
-print("In test file, \(testCorners) are corners. Their product is \(testCorners.reduce(1, *)) (should be 20899048083289).")
-print("In real file, \(corners) are corners. Their product is \(corners.reduce(1, *)).")
+print("In test file, \(testCorners.map { $0.id }) are corners. Their product is \(testCorners.map { $0.id }.reduce(1, *)) (should be 20899048083289).")
+print("In real file, \(corners.map { $0.id }) are corners. Their product is \(corners.map { $0.id }.reduce(1, *)).")
+
+let testMap = buildMap(testCorners, testEdges, testTiles)
+print("Full test map:")
+print(testMap)
+print("There are \(testMap.findSeaMonster()) sea monsters in the test map (should be 2).")
+print("Test map has a hardness of \(testMap.findHardness()) (should be 273).")
+
+let map = buildMap(corners, edges, tiles)
+print("Full real map:")
+print(map)
+print("There are \(map.findSeaMonster()) sea monsters in the real map.")
+print("Real map has a hardness of \(map.findHardness()).")
