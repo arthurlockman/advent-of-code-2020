@@ -6,7 +6,7 @@ func playCombat(player1: [Int], player2: [Int]) {
 	print("== Pre-game report ==")
 	print("Player 1's deck: \(p1deck.map{ String($0) }.joined(separator: ", "))")
 	print("Player 2's deck: \(p2deck.map{ String($0) }.joined(separator: ", "))")
-	while !p1deck.isEmpty && !p2deck.isEmpty {
+	while !p1deck.isEmpty && !p2deck.isEmpty {        
 		let p1card = p1deck.removeFirst()
 		let p2card = p2deck.removeFirst()
 		if p1card > p2card {
